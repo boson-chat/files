@@ -1,0 +1,23 @@
+# Binaries
+/bin/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Go workspace
+go.work
+go.work.sum
+
+# Local uploads
+/data/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Environment
+.env
+.env.*
+!.env.example
