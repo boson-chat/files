@@ -1,0 +1,89 @@
+# Gate every PR + main push: gofmt, go mod tidy, go vet, go test -race
+# against a real Postgres (quota/integration tests) and MinIO (s3 driver),
+# and a Docker build of the release image.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go (vet + test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: files
+          POSTGRES_PASSWORD: files-ci
+          POSTGRES_DB: files
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U files"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      # S3 driver tests. MinIO no longer publishes community images; the
+      # Bitnami build runs the server by default (service containers can't
+      # take a command) and creates the bucket from MINIO_DEFAULT_BUCKETS.
+      minio:
+        image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+        env:
+          MINIO_ROOT_USER: minio
+          MINIO_ROOT_PASSWORD: minio-ci-secret
+          MINIO_DEFAULT_BUCKETS: files-test
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9000/minio/health/live"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      # Integration tests create a throwaway database per test from this one.
+      TEST_DATABASE_URL: postgres://files:files-ci@localhost:5432/files?sslmode=disable
+      TEST_S3_ENDPOINT: http://localhost:9000
+      TEST_S3_BUCKET: files-test
+      TEST_S3_ACCESS_KEY: minio
+      TEST_S3_SECRET_KEY: minio-ci-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: go mod tidy (verify lockfile is in sync)
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - run: go vet ./...
+      - name: go test
+        run: go test -race -count=1 ./...
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          build-args: |
+            VERSION=ci
+          tags: boson/files:ci

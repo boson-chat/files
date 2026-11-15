@@ -1,0 +1,89 @@
+# Builds + pushes the files Docker image to the self-hosted Harbor
+# registry at harbor.floret.dev (project: boson) for a release tag.
+# Image is tagged with the exact version AND `latest`. Multi-arch
+# (linux/amd64 + linux/arm64) so M-series Macs can pull it locally
+# without emulation. The stack's FILES_IMAGE points at this image.
+#
+# Called by release.yml after semantic-release cuts a tag; also runs on a
+# v*.*.* tag push and by hand (workflow_dispatch on a tag ref, or with the
+# version input) to rebuild a release.
+#
+# Required secrets (org-level):
+#   - HARBOR_USERNAME : Harbor user or robot account name
+#   - HARBOR_PASSWORD : matching password or robot CLI secret
+# Both need push rights to the `boson` project in Harbor.
+name: Release Docker images
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, e.g. 1.0.0 (default: the selected tag ref)'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-docker-${{ inputs.version || github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: harbor.floret.dev
+  PROJECT: boson
+  IMAGE: files
+
+jobs:
+  build:
+    name: files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version (strip leading v)
+        id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          v="${INPUT_VERSION:-$GITHUB_REF_NAME}"
+          v="${v#v}"
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "not a release version: $v" >&2
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ steps.ver.outputs.version }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE }}:${{ steps.ver.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE }}:latest
+          # Build-cache backed by the registry so subsequent releases reuse
+          # most layers. `mode=max` caches intermediate stages too.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE }}:buildcache,mode=max

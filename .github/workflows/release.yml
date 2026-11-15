@@ -1,0 +1,67 @@
+# Runs semantic-release on every push to main. Conventional-commit messages
+# determine the bump (feat → minor; fix/perf/refactor/build → patch).
+# semantic-release writes CHANGELOG.md, commits it back to main with
+# [skip ci], pushes a tag (vX.Y.Z) and creates the GitHub Release. When it
+# cut a release, the docker job builds + pushes
+# harbor.floret.dev/boson/files:<version> and :latest from that tag.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Don't double-publish if main updates while a release is mid-flight.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write       # commit CHANGELOG + push tag
+  issues: write         # comment on closed issues
+  pull-requests: write  # comment on merged PRs
+
+jobs:
+  release:
+    name: semantic-release
+    runs-on: ubuntu-latest
+    # Skip the commits semantic-release itself pushes.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # semantic-release needs full history to walk commits since the
+          # last tag.
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # @semantic-release/exec's publishCmd writes version=<x.y.z> to
+      # $GITHUB_OUTPUT; empty when nothing was released.
+      - name: semantic-release
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          npx --yes
+          -p semantic-release@24
+          -p @semantic-release/changelog@6
+          -p @semantic-release/exec@6
+          -p @semantic-release/git@10
+          -p conventional-changelog-conventionalcommits@8
+          semantic-release
+
+  # Tags pushed with GITHUB_TOKEN don't trigger `push: tags` workflows, so
+  # call the image build directly.
+  docker:
+    name: Docker image
+    needs: release
+    if: needs.release.outputs.version != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-docker.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit
