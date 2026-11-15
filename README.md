@@ -207,3 +207,11 @@ Conventional commits on `main` run semantic-release (tag and changelog).
 The release then builds a multi-arch (amd64 and arm64) image and pushes it
 to `harbor.floret.dev/boson/files:<version>` and `:latest`. This uses the
 org secrets `HARBOR_USERNAME` and `HARBOR_PASSWORD`.
+
+## License
+
+Copyright (C) 2026 bludot / the boson authors
+
+Licensed under the [GNU Affero General Public License v3.0](LICENSE) only (`AGPL-3.0-only`).
+
+In plain English: if you run a modified version of this software as a network service, you must offer its source code to the people who use that service.
