@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MicahParks/keyfunc/v3"
 	"github.com/boson-chat/files/config"
 	"github.com/boson-chat/files/internal/apperr"
+	"github.com/boson-chat/files/internal/jwks"
+	"github.com/boson-chat/files/internal/logger"
 	"github.com/boson-chat/files/internal/principal"
 	"github.com/boson-chat/files/internal/reqmeta"
 	"github.com/golang-jwt/jwt/v5"
@@ -45,21 +46,31 @@ type TokenVerifier interface {
 // (cached, refetched on an unknown kid), typ at+jwt, and exp/iss/aud.
 type JWTVerifier struct {
 	keys     jwt.Keyfunc
+	ready    func() bool
 	issuer   string
 	audience string
 }
 
 // NewJWTVerifier starts the JWKS cache. The JWKS being unreachable at
-// startup isn't fatal (keyfunc keeps retrying); tokens fail until it loads.
+// startup isn't fatal: it's retried in the background (1 s backoff up to
+// 30 s) and tokens fail until it loads.
 func NewJWTVerifier(ctx context.Context, cfg config.AuthConfig) (*JWTVerifier, error) {
 	if cfg.JWKSURL == "" || cfg.Issuer == "" || cfg.Audience == "" {
 		return nil, errors.New("AUTH_ISSUER, AUTH_JWKS_URL and AUTH_AUDIENCE are required for account uploads")
 	}
-	k, err := keyfunc.NewDefaultCtx(ctx, []string{cfg.JWKSURL})
+	k, err := jwks.New(ctx, []string{cfg.JWKSURL}, jwks.Options{Logger: logger.FromCtx(ctx)})
 	if err != nil {
 		return nil, fmt.Errorf("JWKS %s: %w", cfg.JWKSURL, err)
 	}
-	return NewJWTVerifierWithKeyfunc(k.Keyfunc, cfg.Issuer, cfg.Audience), nil
+	v := NewJWTVerifierWithKeyfunc(k.Keyfunc, cfg.Issuer, cfg.Audience)
+	v.ready = k.Ready
+	return v, nil
+}
+
+// KeysLoaded reports whether the JWKS has loaded (always true for a
+// verifier built from a Keyfunc).
+func (v *JWTVerifier) KeysLoaded() bool {
+	return v.ready == nil || v.ready()
 }
 
 // NewJWTVerifierWithKeyfunc is NewJWTVerifier with the keys supplied (tests).

@@ -157,12 +157,19 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	internalMux := nethttp.NewServeMux()
 	(&handlers.Internal{Files: fileService, Token: cfg.InternalConfig.Token, ConfigStatus: stackConfig.Status}).Routes(internalMux)
 
+	// Account uploads waiting on the auth service's JWKS are reported but
+	// don't fail readiness: downloads and guest uploads still work.
+	keys, _ := tokens.(interface{ KeysLoaded() bool })
 	ready := func(w nethttp.ResponseWriter, req *nethttp.Request) {
 		if err := sqlDB.PingContext(req.Context()); err != nil {
 			handlers.WriteJSON(w, nethttp.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
 			return
 		}
-		handlers.WriteJSON(w, nethttp.StatusOK, map[string]string{"status": "ok"})
+		body := map[string]string{"status": "ok"}
+		if keys != nil && !keys.KeysLoaded() {
+			body["jwks"] = "loading"
+		}
+		handlers.WriteJSON(w, nethttp.StatusOK, body)
 	}
 	live := func(w nethttp.ResponseWriter, _ *nethttp.Request) {
 		handlers.WriteJSON(w, nethttp.StatusOK, map[string]string{"status": "ok"})
