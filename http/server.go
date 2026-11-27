@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	nethttp "net/http"
+	"strings"
 	"time"
 
 	"github.com/boson-chat/files/config"
@@ -17,6 +18,7 @@ import (
 	"github.com/boson-chat/files/internal/db/repositories/overrides"
 	"github.com/boson-chat/files/internal/leader"
 	"github.com/boson-chat/files/internal/logger"
+	"github.com/boson-chat/files/internal/origins"
 	"github.com/boson-chat/files/internal/services/files"
 	"github.com/boson-chat/files/internal/services/guest"
 	"github.com/boson-chat/files/internal/services/settings"
@@ -39,6 +41,8 @@ type Options struct {
 	Locker leader.LockerImpl
 	// NoNotify turns the config file's fsnotify watch off.
 	NoNotify bool
+	// OriginsHTTPClient fetches ORIGINS_URL (nil: a 10 s timeout client).
+	OriginsHTTPClient *nethttp.Client
 }
 
 // App is the wired service.
@@ -53,6 +57,8 @@ type App struct {
 	Internal    nethttp.Handler
 	Workers     []workers.Worker
 	runner      *workers.Runner
+	// webOrigins fetches ORIGINS_URL (CORS_ALLOWED_ORIGINS=directory); nil otherwise.
+	webOrigins *origins.Fetcher
 }
 
 // NewStorage builds the driver the settings name.
@@ -85,6 +91,16 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	}
 	metrics.SetGlobal(m)
 	log := logger.FromCtx(ctx)
+
+	// Browser pages allowed to call the API (CORS_ALLOWED_ORIGINS).
+	var webOrigins *origins.Fetcher
+	if cfg.HTTPConfig.UsesDirectory() {
+		webOrigins = origins.NewFetcher(strings.TrimSpace(cfg.HTTPConfig.OriginsURL), cfg.HTTPConfig.OriginsRefresh, opts.OriginsHTTPClient)
+	}
+	corsPolicy, err := origins.Parse(cfg.HTTPConfig.CORSAllowedOrigins, webOrigins)
+	if err != nil {
+		return nil, fmt.Errorf("CORS_ALLOWED_ORIGINS: %w", err)
+	}
 
 	// 0. Settings: env, then the config file's files: section.
 	envSettings, err := settings.FromEnv(cfg.FilesConfig)
@@ -188,10 +204,11 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 	}
 
 	return &App{
-		Config: cfg, DB: database, Files: fileService, Settings: settingsService, StackConfig: stackConfig, Storage: store,
+		webOrigins: webOrigins,
+		Config:     cfg, DB: database, Files: fileService, Settings: settingsService, StackConfig: stackConfig, Storage: store,
 		Public: middleware.Chain(publicMux,
 			middleware.Recover, middleware.ClientIP(trusted), middleware.Logging, middleware.SecurityHeaders,
-			middleware.CORS, middleware.Authenticate(tokens, guestService, handlers.WriteError)),
+			middleware.CORSPolicy(corsPolicy), middleware.Authenticate(tokens, guestService, handlers.WriteError)),
 		Internal: middleware.Chain(internalMux, middleware.Recover, middleware.ClientIP(nil), middleware.Logging),
 		Workers:  ws,
 		runner:   workers.NewRunner(locker, m),
@@ -202,6 +219,10 @@ func Build(ctx context.Context, cfg config.Config, opts Options) (*App, error) {
 func (a *App) RunBackground(ctx context.Context) {
 	a.runner.Start(ctx, a.Workers...)
 	go a.StackConfig.Run(ctx)
+	if a.webOrigins != nil {
+		logger.FromCtx(ctx).Info().Str("url", a.Config.HTTPConfig.OriginsURL).Msg("web origins: following the directory's Boson web clients")
+		go a.webOrigins.Run(ctx)
+	}
 }
 
 // Close closes the database.

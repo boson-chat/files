@@ -147,6 +147,9 @@ use Go syntax (`72h`).
 | `FILES_DATA_DIR` | `/data` (image) | local driver |
 | `FILES_GUEST_TOKEN_TTL` / `FILES_GUEST_TOKENS_PER_HOUR` / `FILES_GUEST_IP_FACTOR` | `24h` / `10` / `3` | |
 | `FILES_UPLOAD_TIMEOUT` | `30m` | Read timeout of one request. |
+| `CORS_ALLOWED_ORIGINS` | `*` | Pages allowed to call the API from a browser (uploads, `/v1/me/*`, guest tokens, deleting): comma-separated origins, `*` = any, or `directory` = the list at `ORIGINS_URL`, mixable (`directory,https://chat.example.com`). Other pages get no CORS headers. Downloads (`/f/…`), `GET /v1/files/{id}` and `GET /v1/config` stay open to any page. Origins compare normalised (case, default port, trailing slash). |
+| `ORIGINS_URL` | – | With `directory`: the auth service's `GET /v1/web-origins` (`{"origins": [...]}`: the install's own web client and those of the Boson servers verified in the directories it follows), e.g. `http://auth:8080/v1/web-origins`. Required then. Fetched at start and every `ORIGINS_REFRESH`; a failed fetch keeps the last good list (every 30 s retry); until the first one only the fixed entries are allowed. |
+| `ORIGINS_REFRESH` | `5m` | How often `ORIGINS_URL` is fetched. |
 | `FILES_EXPIRY_EVERY` / `FILES_PENDING_TIMEOUT` | `1m` / `1h` | Expiry worker interval and stale-reservation age. |
 | `FILES_ENABLED`, `FILES_RETENTION`, `FILES_WINDOW`, `FILES_ACCOUNT_QUOTA`, `FILES_ACCOUNT_MAX_FILE`, `FILES_GUEST_ENABLED`, `FILES_GUEST_QUOTA`, `FILES_GUEST_MAX_FILE`, `FILES_STORAGE_DRIVER`, `FILES_STORAGE_MIN_FREE`, `FILES_STORAGE_CAPACITY`, `FILES_S3_ENDPOINT`, `FILES_S3_BUCKET`, `FILES_S3_REGION`, `FILES_S3_PATH_STYLE`, `FILES_S3_PUBLIC_BASE_URL` | contract defaults | Env fallbacks for the `files:` keys. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (+ `_METRICS_` / `_TRACES_`) | | OTLP push of metrics and traces. |

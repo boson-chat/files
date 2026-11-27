@@ -10,6 +10,7 @@ import (
 
 	"github.com/boson-chat/files/internal/ids"
 	"github.com/boson-chat/files/internal/logger"
+	"github.com/boson-chat/files/internal/origins"
 	"github.com/boson-chat/files/internal/reqmeta"
 )
 
@@ -91,23 +92,67 @@ func SecurityHeaders(next nethttp.Handler) nethttp.Handler {
 // CORS: the files API is called cross-origin by the boson clients with
 // bearer/guest tokens (never cookies), so any origin may call it.
 func CORS(next nethttp.Handler) nethttp.Handler {
-	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-		if r.Header.Get("Origin") == "" {
+	return CORSPolicy(origins.MustParse("*", nil))(next)
+}
+
+// OpenPath reports whether a request is for what any page may read:
+// downloads (/f/…), a file's metadata (GET /v1/files/{id}), the public
+// config and health. The policy doesn't narrow those.
+func OpenPath(r *nethttp.Request) bool {
+	p := r.URL.Path
+	if strings.HasPrefix(p, "/f/") || p == "/healthz" || p == "/readyz" || p == "/v1/config" {
+		return true
+	}
+	// GET/HEAD /v1/files/{id} (and its preflight); DELETE is the owner's.
+	if rest, ok := strings.CutPrefix(p, "/v1/files/"); ok && rest != "" && !strings.Contains(rest, "/") {
+		m := r.Method
+		if m == nethttp.MethodOptions {
+			m = r.Header.Get("Access-Control-Request-Method")
+		}
+		return m == nethttp.MethodGet || m == nethttp.MethodHead
+	}
+	return false
+}
+
+// CORSPolicy answers CORS for the pages p allows (CORS_ALLOWED_ORIGINS;
+// "directory" follows the auth service's web origins): "*" when it allows
+// any page, else the page's origin (Vary: Origin). OpenPath requests are
+// open to any page whatever p says. Other pages get no CORS headers, so the
+// browser blocks the call; preflights are still answered here.
+func CORSPolicy(p *origins.Policy) func(nethttp.Handler) nethttp.Handler {
+	return func(next nethttp.Handler) nethttp.Handler {
+		return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			h := w.Header()
+			anyPage := p.Any() || OpenPath(r)
+			if !anyPage {
+				h.Add("Vary", "Origin")
+			}
+			ok := anyPage || p.Allowed(origin)
+			if ok {
+				if anyPage {
+					h.Set("Access-Control-Allow-Origin", "*")
+				} else {
+					h.Set("Access-Control-Allow-Origin", origin)
+				}
+				h.Set("Access-Control-Expose-Headers", "Retry-After, X-Request-Id, Content-Length, Content-Range, Content-Disposition, Accept-Ranges, X-File-Expires-At, X-File-Content-Type")
+			}
+			if r.Method == nethttp.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+				if ok {
+					h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE")
+					h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Filename, Range")
+					h.Set("Access-Control-Max-Age", "600")
+				}
+				w.WriteHeader(nethttp.StatusNoContent)
+				return
+			}
 			next.ServeHTTP(w, r)
-			return
-		}
-		h := w.Header()
-		h.Set("Access-Control-Allow-Origin", "*")
-		h.Set("Access-Control-Expose-Headers", "Retry-After, X-Request-Id, Content-Length, Content-Range, Content-Disposition, Accept-Ranges, X-File-Expires-At, X-File-Content-Type")
-		if r.Method == nethttp.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-			h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE")
-			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Filename, Range")
-			h.Set("Access-Control-Max-Age", "600")
-			w.WriteHeader(nethttp.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+		})
+	}
 }
 
 // Chain applies middleware so the first listed runs first.
