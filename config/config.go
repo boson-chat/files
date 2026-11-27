@@ -63,7 +63,10 @@ type HTTPConfig struct {
 	// origins, which stay allowed when that list can't be fetched).
 	// Downloads (/f/…), file metadata and GET /v1/config stay open to any
 	// page. Requests carry bearer/guest tokens, never cookies.
-	CORSAllowedOrigins string `default:"*" env:"CORS_ALLOWED_ORIGINS"`
+	// Unset means "*" (set in ApplyDefaults: a default:"*" tag makes
+	// configor drop every default, since it reads tag defaults as YAML and
+	// "*" is an alias there).
+	CORSAllowedOrigins string `env:"CORS_ALLOWED_ORIGINS"`
 	// The web origins list for "directory": the auth service's
 	// GET /v1/web-origins ({"origins": [...]}), e.g.
 	// http://auth:8080/v1/web-origins. Fetched at start and every
@@ -211,6 +214,9 @@ func (c *Config) ApplyDefaults() {
 		c.HTTPConfig.PublicURL = "http://localhost:8080"
 	}
 	c.HTTPConfig.PublicURL = strings.TrimRight(c.HTTPConfig.PublicURL, "/")
+	if strings.TrimSpace(c.HTTPConfig.CORSAllowedOrigins) == "" {
+		c.HTTPConfig.CORSAllowedOrigins = "*"
+	}
 	c.AuthConfig.Issuer = strings.TrimRight(c.AuthConfig.Issuer, "/")
 	if c.AuthConfig.JWKSURL == "" && c.AuthConfig.Issuer != "" {
 		c.AuthConfig.JWKSURL = c.AuthConfig.Issuer + "/.well-known/jwks.json"
