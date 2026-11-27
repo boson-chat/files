@@ -57,6 +57,29 @@ type HTTPConfig struct {
 	TrustedProxies string `env:"TRUSTED_PROXIES"`
 	// Upper bound for reading one request (an upload) from the client.
 	UploadTimeout time.Duration `default:"30m" env:"FILES_UPLOAD_TIMEOUT"`
+	// Pages allowed to call the API (uploads, usage, guest tokens, own
+	// files) from a browser (CORS): comma-separated origins, "*" = any, or
+	// "directory" = the origins at ORIGINS_URL (mixable with fixed
+	// origins, which stay allowed when that list can't be fetched).
+	// Downloads (/f/…), file metadata and GET /v1/config stay open to any
+	// page. Requests carry bearer/guest tokens, never cookies.
+	CORSAllowedOrigins string `default:"*" env:"CORS_ALLOWED_ORIGINS"`
+	// The web origins list for "directory": the auth service's
+	// GET /v1/web-origins ({"origins": [...]}), e.g.
+	// http://auth:8080/v1/web-origins. Fetched at start and every
+	// OriginsRefresh; the last good list stays when it fails.
+	OriginsURL     string        `env:"ORIGINS_URL"`
+	OriginsRefresh time.Duration `default:"5m" env:"ORIGINS_REFRESH"`
+}
+
+// UsesDirectory reports whether CORS_ALLOWED_ORIGINS has "directory".
+func (c HTTPConfig) UsesDirectory() bool {
+	for _, e := range strings.Split(c.CORSAllowedOrigins, ",") {
+		if strings.EqualFold(strings.TrimSpace(e), "directory") {
+			return true
+		}
+	}
+	return false
 }
 
 // InternalConfig is the internal listener: /internal/*, /metrics, health.
@@ -202,6 +225,9 @@ func (c *Config) ApplyDefaults() {
 
 // Validate checks settings that would otherwise fail confusingly later.
 func (c Config) Validate() error {
+	if c.HTTPConfig.UsesDirectory() && strings.TrimSpace(c.HTTPConfig.OriginsURL) == "" {
+		return errors.New("CORS_ALLOWED_ORIGINS says directory: set ORIGINS_URL (the auth service's /v1/web-origins, e.g. http://auth:8080/v1/web-origins)")
+	}
 	if _, err := c.HTTPConfig.TrustedProxyPrefixes(); err != nil {
 		return err
 	}
